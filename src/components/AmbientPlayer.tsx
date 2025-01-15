@@ -4,7 +4,7 @@ import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
 import { AudioTrack, AudioState } from '../types/audio';
-import { AUDIO_TRACKS, getBrownNoiseTracks, getRainTracks } from '../config/audio-tracks';
+import { listTracksFromFolder } from '../utils/storage-utils';
 import { audioCache } from '../utils/audio-cache';
 
 // Constants
@@ -40,14 +40,34 @@ const AmbientPlayer = () => {
   const [currentPhrase, setCurrentPhrase] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isShuffling, setIsShuffling] = useState(false);
-  const [brownNoiseTracks, setBrownNoiseTracks] = useState(getBrownNoiseTracks());
-  const [rainTracks, setRainTracks] = useState(getRainTracks());
+  const [brownNoiseTracks, setBrownNoiseTracks] = useState<AudioTrack[]>([]);
+  const [rainTracks, setRainTracks] = useState<AudioTrack[]>([]);
 
   const audioContextRef = useRef<AudioContext>();
   const brownNoiseRef = useRef<AudioSource>();
   const rainSoundRef = useRef<AudioSource>();
   const isMounted = useRef(true);
   
+  const loadTracks = useCallback(async () => {
+    try {
+      const [brownNoise, rain] = await Promise.all([
+        listTracksFromFolder('brown-noise'),
+        listTracksFromFolder('rain')
+      ]);
+      
+      if (!brownNoise.length || !rain.length) {
+        throw new Error('No audio tracks found');
+      }
+      
+      setBrownNoiseTracks(brownNoise);
+      setRainTracks(rain);
+      return { brownNoise, rain };
+    } catch (err) {
+      console.error('Failed to load tracks:', err);
+      throw new Error('Failed to load audio tracks');
+    }
+  }, []);
+
   const initializeAudioSource = useCallback(async (
     context: AudioContext,
     track: AudioTrack,
@@ -97,19 +117,20 @@ const AmbientPlayer = () => {
     };
   }, []);
 
-  // Initialize audio cache first
+  // Initialize audio cache and load tracks
   useEffect(() => {
     const init = async () => {
       try {
         await audioCache.init();
+        const tracks = await loadTracks();
         setIsInitialized(true);
       } catch (err) {
-        console.error('Failed to initialize audio cache:', err);
-        setError('Failed to initialize audio cache. Please try again.');
+        console.error('Failed to initialize:', err);
+        setError('Failed to initialize. Please try again.');
       }
     };
     init();
-  }, []);
+  }, [loadTracks]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -481,29 +502,30 @@ const AmbientPlayer = () => {
     await audioContextRef.current?.close();
     
     try {
-      // First reinitialize the database
+      // First reinitialize the database and load tracks
       await audioCache.init();
-      setIsInitialized(true);
+      const tracks = await loadTracks();
       
-      // Then create new Audio Context
+      // Create new Audio Context
       const ctx = new AudioContext();
       audioContextRef.current = ctx;
       
       // Initialize both audio sources
-      const brownNoise = await initializeAudioSource(
+      const brownNoiseSource = await initializeAudioSource(
         ctx,
-        brownNoiseTracks[brownNoiseState.currentTrackIndex],
+        tracks.brownNoise[brownNoiseState.currentTrackIndex],
         brownNoiseState.volume
       );
       
-      const rain = await initializeAudioSource(
+      const rainSource = await initializeAudioSource(
         ctx,
-        rainTracks[rainState.currentTrackIndex],
+        tracks.rain[rainState.currentTrackIndex],
         rainState.volume
       );
 
-      brownNoiseRef.current = brownNoise;
-      rainSoundRef.current = rain;
+      brownNoiseRef.current = brownNoiseSource;
+      rainSoundRef.current = rainSource;
+      setIsInitialized(true);
       setError(null);
     } catch (err) {
       console.error('Failed to initialize audio:', err);
