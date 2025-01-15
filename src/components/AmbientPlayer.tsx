@@ -3,40 +3,13 @@ import { PlayCircle, PauseCircle, Volume2, Shuffle } from 'lucide-react';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
+import { AudioTrack, AudioState } from '../types/audio';
+import { AUDIO_TRACKS, getBrownNoiseTracks, getRainTracks } from '../config/audio-tracks';
+import { audioCache } from '../utils/audio-cache';
 
-// Initial sound files
-const INITIAL_BROWN_NOISE_SOUNDS = [
-  '/sounds/Brown Noise Stream/A Dreaming Machine - Lush Brown Noise.mp3',
-  '/sounds/Brown Noise Stream/Ambient Network - Digital Brown.mp3',
-  '/sounds/Brown Noise Stream/Brainbox - Deep Brown Noise.mp3',
-  '/sounds/Brown Noise Stream/Brown Noise Studio - Brown Noise Sleep Frequencies.mp3',
-  '/sounds/Brown Noise Stream/Granular - Brown Noise REM.mp3',
-  '/sounds/Brown Noise Stream/Hum Humming - Brown Noise Stream.mp3',
-  '/sounds/Brown Noise Stream/Institute of Noise - Brown Noise Low Pass 485Hz.mp3',
-  '/sounds/Brown Noise Stream/Klangspiel - Brrrrrrown Noise.mp3',
-  '/sounds/Brown Noise Stream/Mind & Ears - Deep relief brown noise.mp3',
-  '/sounds/Brown Noise Stream/Sleepy Mind - Brown Noise Schlaflied.mp3',
-  '/sounds/Brown Noise Stream/Sleepy Parents - Brown Noise Ocean.mp3',
-  '/sounds/Brown Noise Stream/The BD Noise Maker - Focused By The Brown Noise.mp3',
-  '/sounds/Brown Noise Stream/The Tone-Gens - Children\'s Brown Noise.mp3',
-  '/sounds/Brown Noise Stream/ULXI - In Harmony with Brown Noise.mp3',
-  '/sounds/Brown Noise Stream/Winding Down - Brown Noise Catnap.mp3'
-];
-
-const INITIAL_RAIN_SOUNDS = [
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Classic Thunderstorm.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Big Ocean.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Country Lane.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - City Street.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Bird Sanctuary.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Beach Drizzle.mp3',
-  '/sounds/Rain Makes Everything Better/Rainy Mood - Gentle Rain.mp3'
-];
-
-// Crossfade duration in seconds
+// Constants
 const CROSSFADE_DURATION = 2;
-
-const calmingPhrases = [
+const CALMING_PHRASES = [
   "breathe in the moment",
   "find your peace",
   "let thoughts float by",
@@ -49,85 +22,118 @@ interface AudioSource {
   gainNode: GainNode;
   nextAudio?: HTMLAudioElement;
   nextGainNode?: GainNode;
+  track: AudioTrack;
 }
 
 const AmbientPlayer = () => {
-  const [brownNoiseActive, setBrownNoiseActive] = useState(false);
-  const [rainActive, setRainActive] = useState(false);
-  const [brownNoiseVolume, setBrownNoiseVolume] = useState(50);
-  const [rainVolume, setRainVolume] = useState(50);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [brownNoiseState, setBrownNoiseState] = useState<AudioState>({
+    isPlaying: false,
+    volume: 50,
+    currentTrackIndex: 0
+  });
+  const [rainState, setRainState] = useState<AudioState>({
+    isPlaying: false,
+    volume: 50,
+    currentTrackIndex: 0
+  });
   const [currentPhrase, setCurrentPhrase] = useState('');
-  const [currentRainIndex, setCurrentRainIndex] = useState(0);
-  const [currentBrownNoiseIndex, setCurrentBrownNoiseIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isShuffling, setIsShuffling] = useState(false);
-  const [brownNoiseSounds, setBrownNoiseSounds] = useState([...INITIAL_BROWN_NOISE_SOUNDS]);
-  const [rainSounds, setRainSounds] = useState([...INITIAL_RAIN_SOUNDS]);
+  const [brownNoiseTracks, setBrownNoiseTracks] = useState(getBrownNoiseTracks());
+  const [rainTracks, setRainTracks] = useState(getRainTracks());
 
   const audioContextRef = useRef<AudioContext>();
   const brownNoiseRef = useRef<AudioSource>();
   const rainSoundRef = useRef<AudioSource>();
+  const isMounted = useRef(true);
   
   const initializeAudioSource = useCallback(async (
     context: AudioContext,
-    audioPath: string,
+    track: AudioTrack,
     volume: number
   ): Promise<AudioSource> => {
-    const audio = new Audio(audioPath);
-    audio.loop = true; // Fix 1: Ensure loop is set to true
-    await audio.load(); // Ensure audio is properly loaded
+    // Load audio with cache support
+    const audio = await audioCache.loadAudioWithCache({
+      url: track.url,
+      title: track.title,
+      artist: track.artist,
+      category: track.category
+    });
+    audio.loop = true;
     
-    const source = context.createMediaElementSource(audio);
+    // Set up audio element properties before creating nodes
+    audio.crossOrigin = "anonymous";
+    audio.preload = "auto";
+    audio.volume = volume / 100;
+    
+    // Create and connect gain node
     const gainNode = context.createGain();
     gainNode.gain.value = volume / 100;
-    source.connect(gainNode);
     gainNode.connect(context.destination);
 
     // Initialize next audio
-    const nextAudio = new Audio(audioPath);
+    const nextAudio = await audioCache.loadAudioWithCache({
+      url: track.url,
+      title: track.title,
+      artist: track.artist,
+      category: track.category
+    });
     nextAudio.loop = true;
-    await nextAudio.load();
-    const nextSource = context.createMediaElementSource(nextAudio);
+    // Set up next audio properties
+    nextAudio.crossOrigin = "anonymous";
+    nextAudio.preload = "auto";
+    nextAudio.volume = 0;
     const nextGainNode = context.createGain();
     nextGainNode.gain.value = 0;
-    nextSource.connect(nextGainNode);
     nextGainNode.connect(context.destination);
 
     return {
       audio,
       gainNode,
       nextAudio,
-      nextGainNode
+      nextGainNode,
+      track
     };
   }, []);
 
-  // Initialize Web Audio API
+  // Initialize audio cache first
   useEffect(() => {
-    let mounted = true;
+    const init = async () => {
+      try {
+        await audioCache.init();
+        setIsInitialized(true);
+      } catch (err) {
+        console.error('Failed to initialize audio cache:', err);
+        setError('Failed to initialize audio cache. Please try again.');
+      }
+    };
+    init();
+  }, []);
 
+  useEffect(() => {
+    if (!isInitialized) return;
+    
     const initAudio = async () => {
       try {
-        if (!mounted) return;
+        if (!isMounted.current) return;
 
-        // Create Audio Context
         const ctx = new AudioContext();
         audioContextRef.current = ctx;
         
-        // Initialize both audio sources
         const brownNoise = await initializeAudioSource(
           ctx,
-          brownNoiseSounds[currentBrownNoiseIndex],
-          brownNoiseVolume
+          brownNoiseTracks[brownNoiseState.currentTrackIndex],
+          brownNoiseState.volume
         );
         
         const rain = await initializeAudioSource(
           ctx,
-          rainSounds[currentRainIndex],
-          rainVolume
+          rainTracks[rainState.currentTrackIndex],
+          rainState.volume
         );
 
-        if (!mounted) {
-          // Clean up if component unmounted during initialization
+        if (!isMounted.current) {
           brownNoise.audio.pause();
           brownNoise.nextAudio?.pause();
           rain.audio.pause();
@@ -140,7 +146,7 @@ const AmbientPlayer = () => {
         setError(null);
       } catch (err) {
         console.error('Failed to initialize audio:', err);
-        if (mounted) {
+        if (isMounted.current) {
           setError('Failed to initialize audio. Please try again.');
         }
       }
@@ -149,8 +155,7 @@ const AmbientPlayer = () => {
     initAudio();
 
     return () => {
-      mounted = false;
-      // Improved cleanup
+      isMounted.current = false;
       if (brownNoiseRef.current) {
         brownNoiseRef.current.audio.pause();
         brownNoiseRef.current.nextAudio?.pause();
@@ -163,82 +168,110 @@ const AmbientPlayer = () => {
         rainSoundRef.current.gainNode.disconnect();
         rainSoundRef.current.nextGainNode?.disconnect();
       }
-      audioContextRef.current?.close();
+      if (audioContextRef.current?.state !== 'closed') {
+        audioContextRef.current?.close().catch(err => {
+          console.error('Error closing audio context:', err);
+        });
+      }
     };
-  }, [brownNoiseSounds, rainSounds, currentBrownNoiseIndex, currentRainIndex, initializeAudioSource]);
+  }, [brownNoiseTracks, rainTracks, brownNoiseState.currentTrackIndex, rainState.currentTrackIndex, initializeAudioSource, isInitialized]);
 
-  // Handle rotating phrases
   useEffect(() => {
     const randomPhrase = () => {
-      const index = Math.floor(Math.random() * calmingPhrases.length);
-      setCurrentPhrase(calmingPhrases[index]);
+      const index = Math.floor(Math.random() * CALMING_PHRASES.length);
+      setCurrentPhrase(CALMING_PHRASES[index]);
     };
     randomPhrase();
     const interval = setInterval(randomPhrase, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // Fix 3: Improved volume handling
   useEffect(() => {
     if (!brownNoiseRef.current || !audioContextRef.current) return;
     
     const currentTime = audioContextRef.current.currentTime;
     brownNoiseRef.current.gainNode.gain.cancelScheduledValues(currentTime);
-    brownNoiseRef.current.gainNode.gain.setValueAtTime(brownNoiseVolume / 100, currentTime);
-  }, [brownNoiseVolume]);
+    brownNoiseRef.current.gainNode.gain.setValueAtTime(brownNoiseState.volume / 100, currentTime);
+  }, [brownNoiseState.volume]);
 
   useEffect(() => {
     if (!rainSoundRef.current || !audioContextRef.current) return;
     
     const currentTime = audioContextRef.current.currentTime;
     rainSoundRef.current.gainNode.gain.cancelScheduledValues(currentTime);
-    rainSoundRef.current.gainNode.gain.setValueAtTime(rainVolume / 100, currentTime);
-  }, [rainVolume]);
+    rainSoundRef.current.gainNode.gain.setValueAtTime(rainState.volume / 100, currentTime);
+  }, [rainState.volume]);
 
-  // Fix 2: Improved crossfade implementation
   const crossfade = useCallback(async (
     source: AudioSource,
-    nextTrackPath: string,
+    nextTrack: AudioTrack,
     volume: number
   ): Promise<AudioSource> => {
     if (!audioContextRef.current) return source;
 
     const currentTime = audioContextRef.current.currentTime;
     
-    // Prepare next audio before starting crossfade
-    source.nextAudio!.src = nextTrackPath;
-    await source.nextAudio!.load();
+    // Load and prepare next audio with cache
+    const nextAudio = await audioCache.loadAudioWithCache({
+      url: nextTrack.url,
+      title: nextTrack.title,
+      artist: nextTrack.artist,
+      category: nextTrack.category
+    });
+    nextAudio.loop = true;
     
-    // Start next track slightly before fade to ensure smooth transition
-    await source.nextAudio!.play();
+    // Set up next audio with CORS settings
+    nextAudio.crossOrigin = "anonymous";
+    nextAudio.volume = 0;
+    const nextGainNode = audioContextRef.current.createGain();
+    nextGainNode.gain.value = 0;
+    nextGainNode.connect(audioContextRef.current.destination);
     
-    // Crossfade implementation
-    source.gainNode.gain.linearRampToValueAtTime(0, currentTime + CROSSFADE_DURATION);
-    source.nextGainNode!.gain.setValueAtTime(0, currentTime);
-    source.nextGainNode!.gain.linearRampToValueAtTime(
-      volume / 100,
-      currentTime + CROSSFADE_DURATION
-    );
+    // Start next track
+    await nextAudio.play();
+    
+    // Crossfade using audio element volume
+    const fadeOutInterval = setInterval(() => {
+      if (source.audio.volume > 0.01) {
+        source.audio.volume = Math.max(0, source.audio.volume - 0.05);
+      } else {
+        source.audio.pause();
+        clearInterval(fadeOutInterval);
+      }
+    }, CROSSFADE_DURATION * 10);
 
-    // Create new "next" audio for future crossfade
-    const newNextAudio = new Audio();
+    const fadeInInterval = setInterval(() => {
+      if (nextAudio.volume < volume / 100) {
+        nextAudio.volume = Math.min(volume / 100, nextAudio.volume + 0.05);
+      } else {
+        clearInterval(fadeInInterval);
+      }
+    }, CROSSFADE_DURATION * 10);
+
+    // Prepare new next audio for future crossfade
+    const newNextAudio = await audioCache.loadAudioWithCache({
+      url: nextTrack.url,
+      title: nextTrack.title,
+      artist: nextTrack.artist,
+      category: nextTrack.category
+    });
     newNextAudio.loop = true;
-    const newNextSource = audioContextRef.current.createMediaElementSource(newNextAudio);
+    newNextAudio.crossOrigin = "anonymous";
+    newNextAudio.volume = 0;
     const newNextGain = audioContextRef.current.createGain();
     newNextGain.gain.value = 0;
-    newNextSource.connect(newNextGain);
     newNextGain.connect(audioContextRef.current.destination);
 
-    // Return new audio source configuration
     return {
-      audio: source.nextAudio!,
-      gainNode: source.nextGainNode!,
+      audio: nextAudio,
+      gainNode: nextGainNode,
       nextAudio: newNextAudio,
-      nextGainNode: newNextGain
+      nextGainNode: newNextGain,
+      track: nextTrack
     };
   }, []);
 
-  const shuffleArray = (array: string[]) => {
+  const shuffleArray = <T,>(array: T[]) => {
     const newArray = [...array];
     for (let i = newArray.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -249,85 +282,96 @@ const AmbientPlayer = () => {
 
   const crossfadeToNextBrownNoise = useCallback(async () => {
     if (!brownNoiseRef.current) return;
-    const nextIndex = (currentBrownNoiseIndex + 1) % brownNoiseSounds.length;
+    const nextIndex = (brownNoiseState.currentTrackIndex + 1) % brownNoiseTracks.length;
     const newSource = await crossfade(
       brownNoiseRef.current,
-      brownNoiseSounds[nextIndex],
-      brownNoiseVolume
+      brownNoiseTracks[nextIndex],
+      brownNoiseState.volume
     );
     brownNoiseRef.current = newSource;
-    setCurrentBrownNoiseIndex(nextIndex);
-  }, [brownNoiseSounds, currentBrownNoiseIndex, brownNoiseVolume, crossfade]);
+    setBrownNoiseState(prev => ({ ...prev, currentTrackIndex: nextIndex }));
+  }, [brownNoiseTracks, brownNoiseState.currentTrackIndex, brownNoiseState.volume, crossfade]);
 
-  const crossfadeToNext = useCallback(async () => {
+  const crossfadeToNextRain = useCallback(async () => {
     if (!rainSoundRef.current) return;
-    const nextIndex = (currentRainIndex + 1) % rainSounds.length;
+    const nextIndex = (rainState.currentTrackIndex + 1) % rainTracks.length;
     const newSource = await crossfade(
       rainSoundRef.current,
-      rainSounds[nextIndex],
-      rainVolume
+      rainTracks[nextIndex],
+      rainState.volume
     );
     rainSoundRef.current = newSource;
-    setCurrentRainIndex(nextIndex);
-  }, [rainSounds, currentRainIndex, rainVolume, crossfade]);
+    setRainState(prev => ({ ...prev, currentTrackIndex: nextIndex }));
+  }, [rainTracks, rainState.currentTrackIndex, rainState.volume, crossfade]);
 
   const shuffleTracks = useCallback(async () => {
     try {
       setIsShuffling(true);
 
-      // Create new shuffled arrays
-      const shuffledBrownNoise = shuffleArray(brownNoiseSounds);
-      const shuffledRain = shuffleArray(rainSounds);
+      const shuffledBrownNoise = shuffleArray(brownNoiseTracks);
+      const shuffledRain = shuffleArray(rainTracks);
 
-      // Pause current tracks before updating arrays
-      if (brownNoiseActive && brownNoiseRef.current) {
+      if (brownNoiseState.isPlaying && brownNoiseRef.current) {
         await brownNoiseRef.current.audio.pause();
         if (brownNoiseRef.current.nextAudio) {
           await brownNoiseRef.current.nextAudio.pause();
         }
       }
       
-      if (rainActive && rainSoundRef.current) {
+      if (rainState.isPlaying && rainSoundRef.current) {
         await rainSoundRef.current.audio.pause();
         if (rainSoundRef.current.nextAudio) {
           await rainSoundRef.current.nextAudio.pause();
         }
       }
 
-      // Update the state with shuffled arrays
-      setBrownNoiseSounds(shuffledBrownNoise);
-      setRainSounds(shuffledRain);
+      setBrownNoiseTracks(shuffledBrownNoise);
+      setRainTracks(shuffledRain);
       
-      // Reset indices
-      setCurrentBrownNoiseIndex(0);
-      setCurrentRainIndex(0);
+      setBrownNoiseState(prev => ({ ...prev, currentTrackIndex: 0 }));
+      setRainState(prev => ({ ...prev, currentTrackIndex: 0 }));
 
-      // Wait a brief moment for state updates to settle
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Resume playback with new tracks if they were active
-      if (brownNoiseActive && brownNoiseRef.current) {
-        brownNoiseRef.current.audio.src = shuffledBrownNoise[0];
-        await brownNoiseRef.current.audio.load();
-        brownNoiseRef.current.gainNode.gain.setValueAtTime(brownNoiseVolume / 100, audioContextRef.current?.currentTime || 0);
-        await brownNoiseRef.current.audio.play();
+      if (brownNoiseState.isPlaying && brownNoiseRef.current) {
+        const audio = await audioCache.loadAudioWithCache({
+          url: shuffledBrownNoise[0].url,
+          title: shuffledBrownNoise[0].title,
+          artist: shuffledBrownNoise[0].artist,
+          category: shuffledBrownNoise[0].category
+        });
+        audio.loop = true;
+        await audio.play();
+        brownNoiseRef.current.audio = audio;
+        brownNoiseRef.current.gainNode.gain.setValueAtTime(
+          brownNoiseState.volume / 100,
+          audioContextRef.current?.currentTime || 0
+        );
       }
 
-      if (rainActive && rainSoundRef.current) {
-        rainSoundRef.current.audio.src = shuffledRain[0];
-        await rainSoundRef.current.audio.load();
-        rainSoundRef.current.gainNode.gain.setValueAtTime(rainVolume / 100, audioContextRef.current?.currentTime || 0);
-        await rainSoundRef.current.audio.play();
+      if (rainState.isPlaying && rainSoundRef.current) {
+        const audio = await audioCache.loadAudioWithCache({
+          url: shuffledRain[0].url,
+          title: shuffledRain[0].title,
+          artist: shuffledRain[0].artist,
+          category: shuffledRain[0].category
+        });
+        audio.loop = true;
+        await audio.play();
+        rainSoundRef.current.audio = audio;
+        rainSoundRef.current.gainNode.gain.setValueAtTime(
+          rainState.volume / 100,
+          audioContextRef.current?.currentTime || 0
+        );
       }
 
-      // Reset shuffle state after a short delay
       setTimeout(() => setIsShuffling(false), 1000);
     } catch (err) {
       console.error('Failed to shuffle tracks:', err);
       setError('Failed to shuffle tracks. Please try again.');
       setIsShuffling(false);
     }
-  }, [brownNoiseSounds, rainSounds, brownNoiseActive, rainActive, brownNoiseRef, rainSoundRef, brownNoiseVolume, rainVolume]);
+  }, [brownNoiseTracks, rainTracks, brownNoiseState, rainState]);
 
   const toggleBrownNoise = async () => {
     if (!audioContextRef.current || !brownNoiseRef.current) return;
@@ -337,9 +381,14 @@ const AmbientPlayer = () => {
         await audioContextRef.current.resume();
       }
 
-      const newState = !brownNoiseActive;
-      if (newState) {
-        brownNoiseRef.current.gainNode.gain.value = brownNoiseVolume / 100;
+      const newIsPlaying = !brownNoiseState.isPlaying;
+      if (newIsPlaying) {
+        brownNoiseRef.current.gainNode.gain.value = brownNoiseState.volume / 100;
+        console.log('Audio source before play:', {
+          src: brownNoiseRef.current.audio.src,
+          readyState: brownNoiseRef.current.audio.readyState,
+          error: brownNoiseRef.current.audio.error
+        });
         await brownNoiseRef.current.audio.play();
       } else {
         await brownNoiseRef.current.audio.pause();
@@ -347,41 +396,44 @@ const AmbientPlayer = () => {
           await brownNoiseRef.current.nextAudio.pause();
         }
       }
-      setBrownNoiseActive(newState);
+      setBrownNoiseState(prev => ({ ...prev, isPlaying: newIsPlaying }));
       setError(null);
     } catch (err) {
       console.error('Failed to toggle brown noise:', err);
-      setError('Failed to play audio. Please try again.');
+      if (err instanceof Error) {
+        setError(`Failed to play audio: ${err.message}`);
+      } else {
+        setError('Failed to play audio. Please try again.');
+      }
     }
   };
 
 
-  // Handle track ending
   useEffect(() => {
     if (!rainSoundRef.current?.audio) return;
     
     const handleRainEnded = () => {
-      if (rainActive) {
-        crossfadeToNext();
+      if (rainState.isPlaying) {
+        crossfadeToNextRain();
       }
     };
 
     rainSoundRef.current.audio.addEventListener('ended', handleRainEnded);
     return () => rainSoundRef.current?.audio.removeEventListener('ended', handleRainEnded);
-  }, [rainActive, crossfadeToNext]);
+  }, [rainState.isPlaying, crossfadeToNextRain]);
 
   useEffect(() => {
     if (!brownNoiseRef.current?.audio) return;
     
     const handleBrownNoiseEnded = () => {
-      if (brownNoiseActive) {
+      if (brownNoiseState.isPlaying) {
         crossfadeToNextBrownNoise();
       }
     };
 
     brownNoiseRef.current.audio.addEventListener('ended', handleBrownNoiseEnded);
     return () => brownNoiseRef.current?.audio.removeEventListener('ended', handleBrownNoiseEnded);
-  }, [brownNoiseActive, crossfadeToNextBrownNoise]);
+  }, [brownNoiseState.isPlaying, crossfadeToNextBrownNoise]);
 
   const toggleRain = async () => {
     if (!audioContextRef.current || !rainSoundRef.current) return;
@@ -391,9 +443,9 @@ const AmbientPlayer = () => {
         await audioContextRef.current.resume();
       }
 
-      const newState = !rainActive;
-      if (newState) {
-        rainSoundRef.current.gainNode.gain.value = rainVolume / 100;
+      const newIsPlaying = !rainState.isPlaying;
+      if (newIsPlaying) {
+        rainSoundRef.current.gainNode.gain.value = rainState.volume / 100;
         await rainSoundRef.current.audio.play();
       } else {
         await rainSoundRef.current.audio.pause();
@@ -401,7 +453,7 @@ const AmbientPlayer = () => {
           await rainSoundRef.current.nextAudio.pause();
         }
       }
-      setRainActive(newState);
+      setRainState(prev => ({ ...prev, isPlaying: newIsPlaying }));
       setError(null);
     } catch (err) {
       console.error('Failed to toggle rain sound:', err);
@@ -411,8 +463,10 @@ const AmbientPlayer = () => {
 
   const retryInitialization = async () => {
     setError(null);
+    setIsInitialized(false);
+    
     // Cleanup existing audio context and sources
-    if (brownNoiseRef.current && brownNoiseActive) {
+    if (brownNoiseRef.current && brownNoiseState.isPlaying) {
       brownNoiseRef.current.audio.pause();
       brownNoiseRef.current.nextAudio?.pause();
       brownNoiseRef.current.gainNode.disconnect();
@@ -427,21 +481,25 @@ const AmbientPlayer = () => {
     await audioContextRef.current?.close();
     
     try {
-      // Create new Audio Context
+      // First reinitialize the database
+      await audioCache.init();
+      setIsInitialized(true);
+      
+      // Then create new Audio Context
       const ctx = new AudioContext();
       audioContextRef.current = ctx;
       
       // Initialize both audio sources
       const brownNoise = await initializeAudioSource(
         ctx,
-        brownNoiseSounds[currentBrownNoiseIndex],
-        brownNoiseVolume
+        brownNoiseTracks[brownNoiseState.currentTrackIndex],
+        brownNoiseState.volume
       );
       
       const rain = await initializeAudioSource(
         ctx,
-        rainSounds[currentRainIndex],
-        rainVolume
+        rainTracks[rainState.currentTrackIndex],
+        rainState.volume
       );
 
       brownNoiseRef.current = brownNoise;
@@ -487,7 +545,7 @@ const AmbientPlayer = () => {
                   onClick={toggleBrownNoise}
                 >
                 <div className="flex flex-col items-center space-y-2">
-                  {brownNoiseActive ? (
+                  {brownNoiseState.isPlaying ? (
                     <PauseCircle className="w-6 h-6 text-white/80" />
                   ) : (
                     <PlayCircle className="w-6 h-6 text-white/80" />
@@ -503,8 +561,8 @@ const AmbientPlayer = () => {
                     type="range"
                     min="0"
                     max="100"
-                    value={brownNoiseVolume}
-                    onChange={(e) => setBrownNoiseVolume(Number(e.target.value))}
+                    value={brownNoiseState.volume}
+                    onChange={(e) => setBrownNoiseState(prev => ({ ...prev, volume: Number(e.target.value) }))}
                     className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/80"
                   />
                 </div>
@@ -522,7 +580,7 @@ const AmbientPlayer = () => {
                   onClick={toggleRain}
                 >
                 <div className="flex flex-col items-center space-y-2">
-                  {rainActive ? (
+                  {rainState.isPlaying ? (
                     <PauseCircle className="w-6 h-6 text-white/80" />
                   ) : (
                     <PlayCircle className="w-6 h-6 text-white/80" />
@@ -538,8 +596,8 @@ const AmbientPlayer = () => {
                     type="range"
                     min="0"
                     max="100"
-                    value={rainVolume}
-                    onChange={(e) => setRainVolume(Number(e.target.value))}
+                    value={rainState.volume}
+                    onChange={(e) => setRainState(prev => ({ ...prev, volume: Number(e.target.value) }))}
                     className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/80"
                   />
                 </div>
