@@ -5,6 +5,7 @@ export interface AudioMetadata {
   title: string;
   artist: string;
   category: 'brown-noise' | 'rain';
+  fullPath: string;
   lastPlayed?: Date;
   playCount?: number;
   size?: number;
@@ -46,6 +47,22 @@ export const DB_CONFIG = {
 
 export class DatabaseManager {
   private db: IDBDatabase | null = null;
+
+  async clearDatabase(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(DB_CONFIG.name);
+      
+      request.onerror = () => {
+        console.error('Failed to delete database:', request.error);
+        reject(new Error('Failed to clear database'));
+      };
+      
+      request.onsuccess = () => {
+        console.log('Database successfully deleted');
+        resolve();
+      };
+    });
+  }
 
   async init(): Promise<void> {
     return new Promise((resolve, reject) => {

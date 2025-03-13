@@ -3,6 +3,8 @@ export interface AudioTrack {
   artist: string;
   url: string;
   category: 'brown-noise' | 'rain';
+  metadata?: Record<string, string>;
+  fullPath: string;
 }
 
 export interface AudioState {

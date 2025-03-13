@@ -1,4 +1,4 @@
-import AmbientPlayer from './components/AmbientPlayer';
+import { AmbientPlayer } from './components/player/AmbientPlayer';
 import './index.css';
 
 function App() {
